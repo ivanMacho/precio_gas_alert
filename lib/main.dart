@@ -3,6 +3,8 @@ import 'package:http/http.dart' as http;
 import 'dart:convert';
 import 'dart:async';
 import 'package:geolocator/geolocator.dart';
+import 'combustibles.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
   runApp(const MyApp());
@@ -76,16 +78,17 @@ class Gasolinera {
   final String rotulo;
   final double latitud;
   final double longitud;
+  final Map<String, dynamic> datos;
 
-  Gasolinera({required this.rotulo, required this.latitud, required this.longitud});
+  Gasolinera({required this.rotulo, required this.latitud, required this.longitud, required this.datos});
 
   factory Gasolinera.fromJson(Map<String, dynamic> json) {
-    // La latitud y longitud pueden venir con coma decimal, hay que reemplazar por punto
     double parseCoord(String valor) => double.tryParse(valor.replaceAll(',', '.')) ?? 0.0;
     return Gasolinera(
       rotulo: json['Rótulo'] ?? '',
       latitud: parseCoord(json['Latitud'] ?? '0'),
       longitud: parseCoord(json['Longitud (WGS84)'] ?? '0'),
+      datos: json,
     );
   }
 }
@@ -114,11 +117,44 @@ class _MyHomePageState extends State<MyHomePage> {
   Position? _posicionUsuario;
   bool _cargando = true;
   String? _error;
+  String _combustibleSeleccionado = combustibles.first;
+  String? _fechaDatos;
 
   @override
   void initState() {
     super.initState();
+    _cargarCombustibleSeleccionado();
+    _cargarDatosPersistidos();
     _inicializar();
+  }
+
+  Future<void> _cargarCombustibleSeleccionado() async {
+    final prefs = await SharedPreferences.getInstance();
+    setState(() {
+      _combustibleSeleccionado = prefs.getString('combustible') ?? combustibles.first;
+    });
+  }
+
+  Future<void> _cargarDatosPersistidos() async {
+    final prefs = await SharedPreferences.getInstance();
+    final jsonString = prefs.getString('datos_api');
+    final fecha = prefs.getString('fecha_api');
+    if (jsonString != null) {
+      final data = json.decode(jsonString);
+      final lista = data['ListaEESSPrecio'] as List<dynamic>;
+      setState(() {
+        _todasGasolineras = lista.map((e) => Gasolinera.fromJson(e)).toList();
+        _fechaDatos = fecha;
+        _filtrarCercanas();
+        _cargando = false;
+      });
+    }
+  }
+
+  Future<void> _persistirDatosApi(String jsonString, String fecha) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('datos_api', jsonString);
+    await prefs.setString('fecha_api', fecha);
   }
 
   Future<void> _inicializar() async {
@@ -158,9 +194,13 @@ class _MyHomePageState extends State<MyHomePage> {
     if (response.statusCode == 200) {
       final data = json.decode(utf8.decode(response.bodyBytes));
       final lista = data['ListaEESSPrecio'] as List<dynamic>;
-      _todasGasolineras = lista.map((e) => Gasolinera.fromJson(e)).toList();
+      setState(() {
+        _todasGasolineras = lista.map((e) => Gasolinera.fromJson(e)).toList();
+        _fechaDatos = data['Fecha'] ?? '';
+      });
+      await _persistirDatosApi(utf8.decode(response.bodyBytes), _fechaDatos ?? '');
     } else {
-      throw Exception('Error al obtener datos: ${response.statusCode}');
+      throw Exception('Error al obtener datos: {response.statusCode}');
     }
   }
 
@@ -183,6 +223,11 @@ class _MyHomePageState extends State<MyHomePage> {
     }
   }
 
+  Future<void> _refrescarConfiguracion() async {
+    await _cargarCombustibleSeleccionado();
+    setState(() {}); // Refresca la pantalla con el nuevo combustible
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -190,26 +235,147 @@ class _MyHomePageState extends State<MyHomePage> {
         backgroundColor: Theme.of(context).colorScheme.inversePrimary,
         title: Text('Gasolineras cercanas'),
       ),
-      body: _cargando
-          ? const Center(child: CircularProgressIndicator())
+      body: _cargando && _cercanas.isEmpty
+          ? ListView.builder(
+              itemCount: 5,
+              itemBuilder: (context, index) => const ListTile(
+                leading: Icon(Icons.local_gas_station),
+                title: Text('Cargando...'),
+                subtitle: Text('Precio: ... €/L'),
+              ),
+            )
           : _error != null
               ? Center(child: Text(_error!, style: const TextStyle(color: Colors.red)))
-              : ListView.builder(
-                  itemCount: _cercanas.length,
-                  itemBuilder: (context, index) {
-                    final gas = _cercanas[index];
-                    return ListTile(
-                      leading: const Icon(Icons.local_gas_station),
-                      title: Text(gas.rotulo),
-                    );
-                  },
+              : Column(
+                  children: [
+                    Expanded(
+                      child: ListView.builder(
+                        itemCount: _cercanas.length,
+                        itemBuilder: (context, index) {
+                          final gas = _cercanas[index];
+                          final campoPrecio = 'Precio ${_combustibleSeleccionado}';
+                          String precio = gas.datos[campoPrecio]?.toString() ?? '';
+                          if (precio.isEmpty) precio = 'N/D';
+                          return ListTile(
+                            leading: const Icon(Icons.local_gas_station),
+                            title: Text(gas.rotulo),
+                            subtitle: Text('Precio: $precio €/L'),
+                          );
+                        },
+                      ),
+                    ),
+                    if (_fechaDatos != null && _fechaDatos!.isNotEmpty)
+                      Padding(
+                        padding: const EdgeInsets.only(bottom: 8.0, top: 4.0),
+                        child: Text(
+                          'Datos actualizados: $_fechaDatos',
+                          style: TextStyle(fontSize: 12, color: Colors.grey[600]),
+                        ),
+                      ),
+                  ],
                 ),
       floatingActionButton: FloatingActionButton(
-        onPressed: () {
-          // Aquí puedes navegar a la pantalla de ajustes
+        onPressed: () async {
+          await Navigator.of(context).push(
+            MaterialPageRoute(builder: (context) => const ConfiguracionPage()),
+          );
+          await _refrescarConfiguracion();
         },
         tooltip: 'Ajustes',
         child: const Icon(Icons.settings),
+      ),
+    );
+  }
+}
+
+class ConfiguracionPage extends StatefulWidget {
+  const ConfiguracionPage({super.key});
+
+  @override
+  State<ConfiguracionPage> createState() => _ConfiguracionPageState();
+}
+
+class _ConfiguracionPageState extends State<ConfiguracionPage> {
+  String _combustible = combustibles.first;
+  double _distancia = 5.0;
+  double _precio = 2.0;
+
+  @override
+  void initState() {
+    super.initState();
+    _cargarPreferencias();
+  }
+
+  Future<void> _cargarPreferencias() async {
+    final prefs = await SharedPreferences.getInstance();
+    setState(() {
+      _combustible = prefs.getString('combustible') ?? combustibles.first;
+      _distancia = prefs.getDouble('distancia') ?? 5.0;
+      _precio = prefs.getDouble('precio') ?? 2.0;
+    });
+  }
+
+  Future<void> _guardarPreferencias() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('combustible', _combustible);
+    await prefs.setDouble('distancia', _distancia);
+    await prefs.setDouble('precio', _precio);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Configuración'),
+      ),
+      body: Padding(
+        padding: const EdgeInsets.all(16.0),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text('Tipo de combustible:', style: TextStyle(fontWeight: FontWeight.bold)),
+            DropdownButton<String>(
+              value: _combustible,
+              isExpanded: true,
+              items: combustibles.map((c) => DropdownMenuItem(value: c, child: Text(c))).toList(),
+              onChanged: (value) {
+                if (value != null) setState(() => _combustible = value);
+              },
+            ),
+            const SizedBox(height: 24),
+            const Text('Distancia máxima (km):', style: TextStyle(fontWeight: FontWeight.bold)),
+            Slider(
+              value: _distancia,
+              min: 1,
+              max: 100,
+              divisions: 99,
+              label: _distancia.toStringAsFixed(1),
+              onChanged: (value) => setState(() => _distancia = value),
+            ),
+            Text('${_distancia.toStringAsFixed(1)} km'),
+            const SizedBox(height: 24),
+            const Text('Precio máximo por litro (€):', style: TextStyle(fontWeight: FontWeight.bold)),
+            Slider(
+              value: _precio,
+              min: 0.5,
+              max: 3.0,
+              divisions: 25,
+              label: _precio.toStringAsFixed(2),
+              onChanged: (value) => setState(() => _precio = value),
+            ),
+            Text('${_precio.toStringAsFixed(2)} €/L'),
+            const Spacer(),
+            Center(
+              child: ElevatedButton(
+                onPressed: () async {
+                  await _guardarPreferencias();
+                  Navigator.pop(context);
+                },
+                child: const Text('Guardar'),
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
