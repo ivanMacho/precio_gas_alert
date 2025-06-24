@@ -5,8 +5,49 @@ import 'dart:async';
 import 'package:geolocator/geolocator.dart';
 import 'combustibles.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:intl/intl.dart';
+import 'package:workmanager/workmanager.dart';
 
-void main() {
+const String tareaBackground = 'actualizarDatosGasolineras';
+
+void callbackDispatcher() {
+  Workmanager().executeTask((task, inputData) async {
+    if (task == tareaBackground) {
+      try {
+        final url = Uri.parse('https://sedeaplicaciones.minetur.gob.es/ServiciosRESTCarburantes/PreciosCarburantes/EstacionesTerrestres/');
+        final response = await http.get(url);
+        if (response.statusCode == 200) {
+          final data = json.decode(utf8.decode(response.bodyBytes));
+          final fecha = data['Fecha'] ?? '';
+          final prefs = await SharedPreferences.getInstance();
+          await prefs.setString('datos_api', utf8.decode(response.bodyBytes));
+          await prefs.setString('fecha_api', fecha);
+          final ahora = DateTime.now();
+          await prefs.setString('fecha_actualizacion_local', ahora.toString());
+          print('[Workmanager] Datos actualizados correctamente en background');
+        } else {
+          print('[Workmanager] Error al obtener datos en background: \\${response.statusCode}');
+        }
+      } catch (e) {
+        print('[Workmanager] Excepción en background: \\${e.toString()}');
+      }
+    }
+    return Future.value(true);
+  });
+}
+
+void main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  Workmanager().initialize(callbackDispatcher, isInDebugMode: true);
+  Workmanager().registerPeriodicTask(
+    '1',
+    tareaBackground,
+    frequency: const Duration(minutes: 15), // El mínimo real en Android es 15 min
+    initialDelay: const Duration(seconds: 10),
+    constraints: Constraints(
+      networkType: NetworkType.connected,
+    ),
+  );
   runApp(const MyApp());
 }
 
@@ -111,7 +152,7 @@ class MyHomePage extends StatefulWidget {
   State<MyHomePage> createState() => _MyHomePageState();
 }
 
-class _MyHomePageState extends State<MyHomePage> {
+class _MyHomePageState extends State<MyHomePage> with SingleTickerProviderStateMixin {
   List<Gasolinera> _todasGasolineras = [];
   List<Gasolinera> _cercanas = [];
   Position? _posicionUsuario;
@@ -119,13 +160,25 @@ class _MyHomePageState extends State<MyHomePage> {
   String? _error;
   String _combustibleSeleccionado = combustibles.first;
   String? _fechaDatos;
+  String? _fechaActualizacionLocal;
+  late AnimationController _animationController;
 
   @override
   void initState() {
     super.initState();
+    _animationController = AnimationController(
+      vsync: this,
+      duration: const Duration(seconds: 1),
+    );
     _cargarCombustibleSeleccionado();
     _cargarDatosPersistidos();
     _inicializar();
+  }
+
+  @override
+  void dispose() {
+    _animationController.dispose();
+    super.dispose();
   }
 
   Future<void> _cargarCombustibleSeleccionado() async {
@@ -139,12 +192,14 @@ class _MyHomePageState extends State<MyHomePage> {
     final prefs = await SharedPreferences.getInstance();
     final jsonString = prefs.getString('datos_api');
     final fecha = prefs.getString('fecha_api');
+    final fechaLocal = prefs.getString('fecha_actualizacion_local');
     if (jsonString != null) {
       final data = json.decode(jsonString);
       final lista = data['ListaEESSPrecio'] as List<dynamic>;
       setState(() {
         _todasGasolineras = lista.map((e) => Gasolinera.fromJson(e)).toList();
         _fechaDatos = fecha;
+        _fechaActualizacionLocal = fechaLocal;
         _filtrarCercanas();
         _cargando = false;
       });
@@ -155,10 +210,16 @@ class _MyHomePageState extends State<MyHomePage> {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString('datos_api', jsonString);
     await prefs.setString('fecha_api', fecha);
+    final ahora = DateTime.now();
+    await prefs.setString('fecha_actualizacion_local', ahora.toString());
+    setState(() {
+      _fechaActualizacionLocal = ahora.toString();
+    });
   }
 
   Future<void> _inicializar() async {
     setState(() { _cargando = true; _error = null; });
+    _animationController.repeat();
     try {
       await _obtenerUbicacion();
       await _fetchGasStations();
@@ -167,6 +228,7 @@ class _MyHomePageState extends State<MyHomePage> {
       setState(() { _error = e.toString(); });
     } finally {
       setState(() { _cargando = false; });
+      _animationController.stop();
     }
   }
 
@@ -189,9 +251,11 @@ class _MyHomePageState extends State<MyHomePage> {
   }
 
   Future<void> _fetchGasStations() async {
+    print('Iniciando llamada a la API de gasolineras...');
     final url = Uri.parse('https://sedeaplicaciones.minetur.gob.es/ServiciosRESTCarburantes/PreciosCarburantes/EstacionesTerrestres/');
     final response = await http.get(url);
     if (response.statusCode == 200) {
+      print('Respuesta de la API correcta (OK)');
       final data = json.decode(utf8.decode(response.bodyBytes));
       final lista = data['ListaEESSPrecio'] as List<dynamic>;
       setState(() {
@@ -199,8 +263,11 @@ class _MyHomePageState extends State<MyHomePage> {
         _fechaDatos = data['Fecha'] ?? '';
       });
       await _persistirDatosApi(utf8.decode(response.bodyBytes), _fechaDatos ?? '');
+      print('Fin de la llamada a la API.');
     } else {
-      throw Exception('Error al obtener datos: {response.statusCode}');
+      print('Respuesta de la API con error. Código: ${response.statusCode}');
+      print('Fin de la llamada a la API.');
+      throw Exception('Error al obtener datos:  {response.statusCode}');
     }
   }
 
@@ -228,12 +295,22 @@ class _MyHomePageState extends State<MyHomePage> {
     setState(() {}); // Refresca la pantalla con el nuevo combustible
   }
 
+  String _formatearFechaLocal(String? fecha) {
+    if (fecha == null || fecha.isEmpty) return '-';
+    try {
+      final dt = DateTime.parse(fecha);
+      return DateFormat('dd/MM/yyyy HH:mm').format(dt);
+    } catch (_) {
+      return fecha;
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
         backgroundColor: Theme.of(context).colorScheme.inversePrimary,
-        title: Text('Gasolineras cercanas'),
+        title: const Text('Precio Gas Alert'),
       ),
       body: _cargando && _cercanas.isEmpty
           ? ListView.builder(
@@ -248,6 +325,20 @@ class _MyHomePageState extends State<MyHomePage> {
               ? Center(child: Text(_error!, style: const TextStyle(color: Colors.red)))
               : Column(
                   children: [
+                    const SizedBox(height: 16),
+                    const Text(
+                      'Gasolineras más cercanas',
+                      style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      'Mostrando precios para: ' +
+                        (_cercanas.isNotEmpty && _cercanas.first.datos.containsKey('Precio ${_combustibleSeleccionado}')
+                         ? _combustibleSeleccionado
+                         : '-'),
+                      style: const TextStyle(fontSize: 14, color: Colors.grey),
+                    ),
+                    const SizedBox(height: 8),
                     Expanded(
                       child: ListView.builder(
                         itemCount: _cercanas.length,
@@ -266,10 +357,32 @@ class _MyHomePageState extends State<MyHomePage> {
                     ),
                     if (_fechaDatos != null && _fechaDatos!.isNotEmpty)
                       Padding(
-                        padding: const EdgeInsets.only(bottom: 8.0, top: 4.0),
-                        child: Text(
-                          'Datos actualizados: $_fechaDatos',
-                          style: TextStyle(fontSize: 12, color: Colors.grey[600]),
+                        padding: const EdgeInsets.only(bottom: 64.0, top: 4.0),
+                        child: Row(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            RotationTransition(
+                              turns: _animationController,
+                              child: IconButton(
+                                icon: const Icon(Icons.refresh),
+                                onPressed: _cargando ? null : _inicializar,
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                            Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  'Fecha de los datos: ${_fechaDatos ?? '-'}',
+                                  style: TextStyle(fontSize: 12, color: Colors.grey[600]),
+                                ),
+                                Text(
+                                  'Actualizado en el dispositivo: ${_formatearFechaLocal(_fechaActualizacionLocal)}',
+                                  style: TextStyle(fontSize: 12, color: Colors.grey[600]),
+                                ),
+                              ],
+                            ),
+                          ],
                         ),
                       ),
                   ],
