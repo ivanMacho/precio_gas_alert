@@ -2,6 +2,7 @@
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION"/>
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION"/>
     <uses-permission android:name="android.permission.ACCESS_BACKGROUND_LOCATION"/>
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <application
         android:label="precio_gas_alert"
         android:name="${applicationName}"
@@ -33,6 +34,18 @@
         <meta-data
             android:name="flutterEmbedding"
             android:value="2" />
+        <service
+            android:name="rekab.app.background_locator.IsolateHolderService"
+            android:enabled="true"
+            android:exported="false" />
+        <meta-data android:name="rekab.app.background_locator.notification_channel_name"
+            android:value="Ubicación en background" />
+        <meta-data android:name="rekab.app.background_locator.notification_title"
+            android:value="La app está usando tu ubicación" />
+        <meta-data android:name="rekab.app.background_locator.notification_msg"
+            android:value="Precio Gas Alert está comprobando gasolineras cercanas" />
+        <meta-data android:name="rekab.app.background_locator.notification_icon"
+            android:resource="@mipmap/ic_launcher" />
     </application>
     <!-- Required to query activities that can process text, see:
          https://developer.android.com/training/package-visibility and

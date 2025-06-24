@@ -8,6 +8,10 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:intl/intl.dart';
 import 'package:workmanager/workmanager.dart';
 import 'package:app_settings/app_settings.dart';
+import 'package:background_locator_2/background_locator.dart';
+import 'package:background_locator_2/location_dto.dart';
+import 'package:background_locator_2/settings/android_settings.dart' as bl2;
+import 'package:background_locator_2/settings/locator_settings.dart' as bl2;
 
 const String tareaBackground = 'actualizarDatosGasolineras';
 
@@ -16,8 +20,11 @@ const Duration frecuenciaComprobacionForeground = Duration(
   seconds: 30,
 ); // Cambia aquí para foreground
 const Duration frecuenciaComprobacionBackground = Duration(
-  minutes: 10,
+  seconds: 10,
 ); // Cambia aquí para background (mínimo real en Android)
+
+// Variable global para almacenar la última posición recibida en background
+Position? _ultimaPosicionBackground;
 
 Future<void> comprobarAlertas(
   List<Gasolinera> gasolineras,
@@ -49,111 +56,103 @@ Future<void> comprobarAlertas(
   }
 }
 
-void callbackDispatcher() {
-  Workmanager().executeTask((task, inputData) async {
-    print('[WM] Tarea background recibida: $task');
-    if (task == tareaBackground) {
-      try {
-        print('[WM] Iniciando obtención de datos de la API en background...');
-        final url = Uri.parse(
-          'https://sedeaplicaciones.minetur.gob.es/ServiciosRESTCarburantes/PreciosCarburantes/EstacionesTerrestres/',
-        );
-        final response = await http.get(url);
-        if (response.statusCode == 200) {
-          print('[WM] Respuesta de la API correcta (OK)');
-          final data = json.decode(utf8.decode(response.bodyBytes));
-          final fecha = data['Fecha'] ?? '';
-          final prefs = await SharedPreferences.getInstance();
-          await prefs.setString('datos_api', utf8.decode(response.bodyBytes));
-          await prefs.setString('fecha_api', fecha);
-          final ahora = DateTime.now();
-          await prefs.setString('fecha_actualizacion_local', ahora.toString());
-          print('[WM] Datos guardados en preferencias.');
-          // Comprobar alertas en background
-          final lista = data['ListaEESSPrecio'] as List<dynamic>;
-          final gasolineras = lista.map((e) => Gasolinera.fromJson(e)).toList();
-          final combustible =
-              prefs.getString('combustible') ?? combustibles.first;
-          final distanciaMax = prefs.getDouble('distancia') ?? 5.0;
-          final precioMax = prefs.getDouble('precio') ?? 2.0;
-          // Obtener ubicación actual de forma robusta
-          Position? posicionUsuario;
-          try {
-            bool servicioHabilitado =
-                await Geolocator.isLocationServiceEnabled();
-            LocationPermission permiso = await Geolocator.checkPermission();
-            print('[WM] Servicio de ubicación habilitado: $servicioHabilitado');
-            print('[WM] Permiso de ubicación actual: $permiso');
-            if (servicioHabilitado && permiso == LocationPermission.always) {
-              try {
-                posicionUsuario = await Geolocator.getCurrentPosition(
-                  timeLimit: Duration(seconds: 10),
-                  desiredAccuracy: LocationAccuracy.high,
-                  forceAndroidLocationManager:
-                      true, // fuerza el uso del LocationManager nativo
-                );
-                print(
-                  '[WM] Posición obtenida: ${posicionUsuario.latitude}, ${posicionUsuario.longitude}',
-                );
-              } catch (e) {
-                print(
-                  '[WM] Error al obtener la posición en background, intentando última conocida: $e',
-                );
-                posicionUsuario = await Geolocator.getLastKnownPosition();
-                if (posicionUsuario != null) {
-                  print(
-                    '[WM] Última posición conocida: ${posicionUsuario.latitude}, ${posicionUsuario.longitude}',
-                  );
-                } else {
-                  print('[WM] No hay última posición conocida disponible.');
-                }
-              }
-            } else {
-              print(
-                '[WM][ADVERTENCIA] Permiso insuficiente o servicio deshabilitado para obtener ubicación en background.',
-              );
-            }
-            if (posicionUsuario == null) {
-              print(
-                '[WM][ADVERTENCIA] No se pudo obtener la posición del usuario. No se comprobarán alertas.',
-              );
-            }
-          } catch (e) {
-            print('[WM] Error general al comprobar permisos/ubicación: $e');
-          }
-          await comprobarAlertas(
-            gasolineras,
-            posicionUsuario,
-            combustible,
-            distanciaMax,
-            precioMax,
-          );
-          print('[WM] Comprobación de alertas en background completada.');
-          print('[WM] Datos actualizados correctamente en background');
-        } else {
-          print(
-            '[WM][ERROR] Error al obtener datos en background: ${response.statusCode}',
-          );
-        }
-      } catch (e) {
-        print('[WM][ERROR] Excepción en background: ${e.toString()}');
-      }
+// Callback que se ejecuta en background cuando llega una nueva ubicación
+void backgroundLocationCallback(LocationDto locationDto) async {
+  print(
+    '[BL2] Nueva ubicación recibida en background: ${locationDto.latitude}, ${locationDto.longitude}',
+  );
+  _ultimaPosicionBackground = Position(
+    latitude: locationDto.latitude,
+    longitude: locationDto.longitude,
+    timestamp: DateTime.now(),
+    accuracy: locationDto.accuracy,
+    altitude: locationDto.altitude,
+    heading: locationDto.heading,
+    speed: locationDto.speed,
+    speedAccuracy: locationDto.speedAccuracy,
+    altitudeAccuracy: 0.0, // Valor dummy, no disponible en background_locator_2
+    headingAccuracy: 0.0, // Valor dummy, no disponible en background_locator_2
+  );
+  // Cargar datos persistidos y preferencias
+  final prefs = await SharedPreferences.getInstance();
+  final jsonString = prefs.getString('datos_api');
+  if (jsonString == null) {
+    print('[BL2] No hay datos de gasolineras persistidos.');
+    return;
+  }
+  final data = json.decode(jsonString);
+  final lista = data['ListaEESSPrecio'] as List<dynamic>;
+  final gasolineras = lista.map((e) => Gasolinera.fromJson(e)).toList();
+  final combustible = prefs.getString('combustible') ?? combustibles.first;
+  final distanciaMax = prefs.getDouble('distancia') ?? 5.0;
+  final precioMax = prefs.getDouble('precio') ?? 2.0;
+  await comprobarAlertas(
+    gasolineras,
+    _ultimaPosicionBackground,
+    combustible,
+    distanciaMax,
+    precioMax,
+  );
+}
+
+Future<void> startBackgroundLocation() async {
+  print('[BL2] Inicializando background_locator_2...');
+  try {
+    // Comprobar permisos antes de registrar
+    final permiso = await Geolocator.checkPermission();
+    final servicioHabilitado = await Geolocator.isLocationServiceEnabled();
+    print('[BL2] Permiso de ubicación antes de registrar: $permiso');
+    print('[BL2] Servicio de ubicación habilitado: $servicioHabilitado');
+    if (permiso != LocationPermission.always) {
+      print('[BL2][ADVERTENCIA] El permiso NO es "always". El servicio puede no funcionar en background.');
     }
-    print('[WM] Tarea background finalizada.');
-    return Future.value(true);
-  });
+    if (!servicioHabilitado) {
+      print('[BL2][ADVERTENCIA] El servicio de ubicación está deshabilitado.');
+    }
+    await BackgroundLocator.initialize();
+    print('[BL2] BackgroundLocator inicializado. Registrando callback...');
+    await BackgroundLocator.registerLocationUpdate(
+      backgroundLocationCallback,
+      androidSettings: bl2.AndroidSettings(
+        accuracy: bl2.LocationAccuracy.NAVIGATION,
+        interval: frecuenciaComprobacionBackground.inMilliseconds,
+        distanceFilter: 0,
+        client: bl2.LocationClient.google,
+        androidNotificationSettings: bl2.AndroidNotificationSettings(
+          notificationChannelName: 'Ubicación en background',
+          notificationTitle: 'La app está usando tu ubicación',
+          notificationMsg: 'Precio Gas Alert está comprobando gasolineras cercanas',
+          notificationBigMsg: 'Precio Gas Alert está comprobando gasolineras cercanas en segundo plano.',
+          notificationIcon: '',
+          notificationIconColor: Colors.blue,
+        ),
+      ),
+      autoStop: false,
+    );
+    print('[BL2] Servicio de localización en background registrado correctamente.');
+  } catch (e, st) {
+    print('[BL2][ERROR] Error al registrar el servicio de localización en background: $e');
+    print(st);
+  }
+}
+
+Future<void> stopBackgroundLocation() async {
+  await BackgroundLocator.unRegisterLocationUpdate();
+  print('[BL2] Servicio de localización en background detenido.');
 }
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  Workmanager().initialize(callbackDispatcher, isInDebugMode: true);
-  Workmanager().registerPeriodicTask(
-    '1',
-    tareaBackground,
-    frequency: frecuenciaComprobacionBackground, // Usar variable global
-    initialDelay: const Duration(seconds: 60),
-    constraints: Constraints(networkType: NetworkType.connected),
-  );
+  // Elimina el WorkManager para comprobaciones periódicas de ubicación
+  // Workmanager().initialize(callbackDispatcher, isInDebugMode: true);
+  // Workmanager().registerPeriodicTask(
+  //   '1',
+  //   tareaBackground,
+  //   frequency: frecuenciaComprobacionBackground, // Usar variable global
+  //   initialDelay: const Duration(seconds: 60),
+  //   constraints: Constraints(networkType: NetworkType.connected),
+  // );
+  await startBackgroundLocation();
   runApp(const MyApp());
 }
 
