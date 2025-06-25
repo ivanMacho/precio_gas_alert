@@ -14,6 +14,7 @@ class _ConfigPageState extends State<ConfigPage> {
   String _combustible = combustibles.first;
   double _distancia = 5.0;
   double _precio = 2.0;
+  bool _cambiosGuardados = false;
 
   @override
   void initState() {
@@ -35,6 +36,7 @@ class _ConfigPageState extends State<ConfigPage> {
     await prefs.setString('combustible', _combustible);
     await prefs.setDouble('distancia', _distancia);
     await prefs.setDouble('precio', _precio);
+    _cambiosGuardados = true;
   }
 
   @override
@@ -93,7 +95,7 @@ class _ConfigPageState extends State<ConfigPage> {
               child: ElevatedButton(
                 onPressed: () async {
                   await _guardarPreferencias();
-                  Navigator.pop(context);
+                  Navigator.pop(context, _cambiosGuardados);
                 },
                 child: const Text('Guardar'),
               ),

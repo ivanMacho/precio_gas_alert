@@ -1,6 +1,7 @@
 import 'package:geolocator/geolocator.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:flutter/material.dart';
+import 'package:app_settings/app_settings.dart';
 
 /// Servicio para gestionar la ubicación y los permisos
 class LocationService {
@@ -36,7 +37,7 @@ class LocationService {
         builder: (context) => AlertDialog(
           title: const Text('Permiso de ubicación en segundo plano'),
           content: const Text(
-            'Para poder avisarte aunque la app esté cerrada, necesitamos permiso de ubicación en segundo plano. ¿Quieres concederlo?',
+            'Para que la app funcione correctamente en segundo plano, debes conceder el permiso de ubicación "Permitir siempre" (always) en la configuración de la app.\n\nAdemás, desactiva cualquier restricción de ahorro de batería para esta app en tu dispositivo Android.\n\n¿Quieres ir a la configuración ahora?',
           ),
           actions: [
             TextButton(
@@ -44,15 +45,16 @@ class LocationService {
               child: const Text('No'),
             ),
             TextButton(
-              onPressed: () => Navigator.pop(context, true),
+              onPressed: () async {
+                Navigator.pop(context, true);
+                AppSettings.openAppSettings();
+              },
               child: const Text('Sí'),
             ),
           ],
         ),
       );
-      if (aceptar == true) {
-        permiso = await Geolocator.requestPermission();
-      }
+      // No se solicita el permiso automáticamente, el usuario debe hacerlo manualmente
     }
     return permiso == LocationPermission.always;
   }

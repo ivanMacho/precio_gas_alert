@@ -10,7 +10,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'dart:async';
 import 'package:intl/intl.dart';
 
-/// Pantalla principal que muestra la lista de gasolineras cercanas y permite refrescar/configurar
+/// Pantalla principal que muestra la lista de gasolineras que cumplen los criterios de alerta y permite refrescar/configurar
 class HomePage extends StatefulWidget {
   const HomePage({super.key});
 
@@ -21,7 +21,7 @@ class HomePage extends StatefulWidget {
 class _HomePageState extends State<HomePage>
     with SingleTickerProviderStateMixin {
   List<Gasolinera> _todasGasolineras = [];
-  List<Gasolinera> _cercanas = [];
+  List<Gasolinera> _gasolinerasConAlerta = [];
   Position? _posicionUsuario;
   bool _cargando = true;
   String? _error;
@@ -29,6 +29,8 @@ class _HomePageState extends State<HomePage>
   String? _fechaDatos;
   late AnimationController _animationController;
   Timer? _timerAlertas;
+  double _distanciaMax = 5.0;
+  double _precioMax = 2.0;
 
   @override
   void initState() {
@@ -58,6 +60,8 @@ class _HomePageState extends State<HomePage>
     setState(() {
       _combustibleSeleccionado =
           prefs.getString('combustible') ?? combustibles.first;
+      _distanciaMax = prefs.getDouble('distancia') ?? 5.0;
+      _precioMax = prefs.getDouble('precio') ?? 2.0;
     });
   }
 
@@ -98,7 +102,7 @@ class _HomePageState extends State<HomePage>
         _todasGasolineras = result.gasolineras;
         _fechaDatos = result.fecha;
       });
-      _filtrarCercanas();
+      await _filtrarGasolinerasConAlerta();
       final prefs = await SharedPreferences.getInstance();
       final combustible = prefs.getString('combustible') ?? combustibles.first;
       final distanciaMax = prefs.getDouble('distancia') ?? 5.0;
@@ -122,31 +126,25 @@ class _HomePageState extends State<HomePage>
     }
   }
 
-  void _filtrarCercanas() {
+  Future<void> _filtrarGasolinerasConAlerta() async {
     if (_posicionUsuario == null) return;
-    _cercanas = List.from(_todasGasolineras);
-    _cercanas.sort((a, b) {
-      double da = Geolocator.distanceBetween(
-        _posicionUsuario!.latitude,
-        _posicionUsuario!.longitude,
-        a.latitud,
-        a.longitud,
-      );
-      double db = Geolocator.distanceBetween(
-        _posicionUsuario!.latitude,
-        _posicionUsuario!.longitude,
-        b.latitud,
-        b.longitud,
-      );
-      return da.compareTo(db);
+
+    final gasolinerasConAlerta = await AlertService.obtenerGasolinerasConAlerta(
+      _todasGasolineras,
+      _posicionUsuario,
+      _combustibleSeleccionado,
+      _distanciaMax,
+      _precioMax,
+    );
+
+    setState(() {
+      _gasolinerasConAlerta = gasolinerasConAlerta;
     });
-    if (_cercanas.length > 5) {
-      _cercanas = _cercanas.sublist(0, 5);
-    }
   }
 
   Future<void> _refrescarConfiguracion() async {
     await _cargarCombustibleSeleccionado();
+    await _filtrarGasolinerasConAlerta();
     setState(() {});
   }
 
@@ -200,33 +198,125 @@ class _HomePageState extends State<HomePage>
                 style: const TextStyle(color: Colors.red),
               ),
             )
-          : _cercanas.isEmpty
-          ? Center(child: Text('Sin datos para mostrar.'))
+          : _gasolinerasConAlerta.isEmpty
+          ? Center(
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  const Icon(
+                    Icons.local_gas_station_outlined,
+                    size: 64,
+                    color: Colors.grey,
+                  ),
+                  const SizedBox(height: 16),
+                  const Text(
+                    'No hay gasolineras que cumplan los criterios',
+                    style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                    textAlign: TextAlign.center,
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    'Combustible: $_combustibleSeleccionado\nPrecio máximo: $_precioMax €/L\nDistancia máxima: $_distanciaMax km',
+                    style: const TextStyle(fontSize: 14, color: Colors.grey),
+                    textAlign: TextAlign.center,
+                  ),
+                ],
+              ),
+            )
           : Column(
               children: [
                 const SizedBox(height: 16),
                 const Text(
-                  'Gasolineras más cercanas',
+                  'Tus gasolineras filtradas',
                   style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
                 ),
                 const SizedBox(height: 8),
+                Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 16,
+                    vertical: 8,
+                  ),
+                  margin: const EdgeInsets.symmetric(horizontal: 16),
+                  decoration: BoxDecoration(
+                    color: Colors.green.withOpacity(0.1),
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(color: Colors.green.withOpacity(0.3)),
+                  ),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      const Icon(
+                        Icons.check_circle,
+                        color: Colors.green,
+                        size: 16,
+                      ),
+                      const SizedBox(width: 8),
+                      Text(
+                        '$_combustibleSeleccionado ≤ $_precioMax €/L • ≤ $_distanciaMax km',
+                        style: const TextStyle(
+                          fontSize: 12,
+                          color: Colors.green,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 8),
                 Text(
-                  'Mostrando precios para: ${_cercanas.isNotEmpty && _cercanas.first.datos.containsKey('Precio $_combustibleSeleccionado') ? _combustibleSeleccionado : '-'}',
+                  '${_gasolinerasConAlerta.length} gasolinera${_gasolinerasConAlerta.length == 1 ? '' : 's'} encontrada${_gasolinerasConAlerta.length == 1 ? '' : 's'}',
                   style: const TextStyle(fontSize: 14, color: Colors.grey),
                 ),
                 const SizedBox(height: 8),
                 Expanded(
                   child: ListView.builder(
-                    itemCount: _cercanas.length,
+                    itemCount: _gasolinerasConAlerta.length,
                     itemBuilder: (context, index) {
-                      final gas = _cercanas[index];
+                      final gas = _gasolinerasConAlerta[index];
                       final campoPrecio = 'Precio $_combustibleSeleccionado';
                       String precio = gas.datos[campoPrecio]?.toString() ?? '';
                       if (precio.isEmpty) precio = 'N/D';
-                      return ListTile(
-                        leading: const Icon(Icons.local_gas_station),
-                        title: Text(gas.rotulo),
-                        subtitle: Text('Precio: $precio €/L'),
+
+                      // Calcular distancia
+                      double distancia = 0.0;
+                      if (_posicionUsuario != null) {
+                        distancia =
+                            Geolocator.distanceBetween(
+                              _posicionUsuario!.latitude,
+                              _posicionUsuario!.longitude,
+                              gas.latitud,
+                              gas.longitud,
+                            ) /
+                            1000.0;
+                      }
+
+                      return Card(
+                        margin: const EdgeInsets.symmetric(
+                          horizontal: 16,
+                          vertical: 4,
+                        ),
+                        child: ListTile(
+                          leading: const Icon(
+                            Icons.local_gas_station,
+                            color: Colors.green,
+                          ),
+                          title: Text(
+                            gas.rotulo,
+                            style: const TextStyle(fontWeight: FontWeight.bold),
+                          ),
+                          subtitle: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text('Precio: $precio €/L'),
+                              Text(
+                                'Distancia: ${distancia.toStringAsFixed(2)} km',
+                              ),
+                            ],
+                          ),
+                          trailing: const Icon(
+                            Icons.arrow_forward_ios,
+                            size: 16,
+                          ),
+                        ),
                       );
                     },
                   ),
@@ -264,10 +354,14 @@ class _HomePageState extends State<HomePage>
             ),
       floatingActionButton: FloatingActionButton(
         onPressed: () async {
-          await Navigator.of(
-            context,
-          ).push(MaterialPageRoute(builder: (context) => const ConfigPage()));
-          await _refrescarConfiguracion();
+          final cambiosGuardados = await Navigator.of(context).push<bool>(
+            MaterialPageRoute(builder: (context) => const ConfigPage()),
+          );
+
+          // Solo actualizar si se guardaron cambios
+          if (cambiosGuardados == true) {
+            await _refrescarConfiguracion();
+          }
         },
         tooltip: 'Ajustes',
         child: const Icon(Icons.settings),
