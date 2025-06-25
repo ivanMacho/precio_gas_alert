@@ -1,11 +1,11 @@
 {
-    "name": "precio_gas_alert",
-    "short_name": "precio_gas_alert",
+    "name": "Precio Gas Alert",
+    "short_name": "Precio Gas Alert",
     "start_url": ".",
     "display": "standalone",
     "background_color": "#0175C2",
     "theme_color": "#0175C2",
-    "description": "A new Flutter project.",
+    "description": "Aplicación para alertas de precios de gasolina",
     "orientation": "portrait-primary",
     "prefer_related_applications": false,
     "icons": [

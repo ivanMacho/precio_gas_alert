@@ -27,7 +27,6 @@ class _HomePageState extends State<HomePage>
   String? _error;
   String _combustibleSeleccionado = combustibles.first;
   String? _fechaDatos;
-  String? _fechaActualizacionLocal;
   late AnimationController _animationController;
   Timer? _timerAlertas;
 
@@ -66,14 +65,12 @@ class _HomePageState extends State<HomePage>
     final prefs = await SharedPreferences.getInstance();
     final jsonString = prefs.getString('datos_api');
     final fecha = prefs.getString('fecha_api');
-    final fechaLocal = prefs.getString('fecha_actualizacion_local');
     if (jsonString != null) {
       final data = ApiService
           .apiUrl; // dummy para evitar warning, reemplazar por parseo real si se desea
       // Aquí deberías parsear el jsonString si quieres mostrar datos persistidos
       setState(() {
         _fechaDatos = fecha;
-        _fechaActualizacionLocal = fechaLocal;
         _cargando = false;
       });
     }
@@ -83,10 +80,8 @@ class _HomePageState extends State<HomePage>
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString('datos_api', jsonString);
     await prefs.setString('fecha_api', fecha);
-    final ahora = DateTime.now();
-    await prefs.setString('fecha_actualizacion_local', ahora.toString());
     setState(() {
-      _fechaActualizacionLocal = ahora.toString();
+      _fechaDatos = fecha;
     });
   }
 
@@ -155,16 +150,6 @@ class _HomePageState extends State<HomePage>
     setState(() {});
   }
 
-  String _formatearFechaLocal(String? fecha) {
-    if (fecha == null || fecha.isEmpty) return '-';
-    try {
-      final dt = DateTime.parse(fecha);
-      return DateFormat('dd/MM/yyyy HH:mm').format(dt);
-    } catch (_) {
-      return fecha;
-    }
-  }
-
   void _iniciarTimerAlertas() {
     _timerAlertas = Timer.periodic(const Duration(seconds: 30), (_) async {
       await _comprobarAlertasPeriodicas();
@@ -226,7 +211,7 @@ class _HomePageState extends State<HomePage>
                 ),
                 const SizedBox(height: 8),
                 Text(
-                  'Mostrando precios para: ${_cercanas.isNotEmpty && _cercanas.first.datos.containsKey('Precio _combustibleSeleccionado') ? _combustibleSeleccionado : '-'}',
+                  'Mostrando precios para: ${_cercanas.isNotEmpty && _cercanas.first.datos.containsKey('Precio $_combustibleSeleccionado') ? _combustibleSeleccionado : '-'}',
                   style: const TextStyle(fontSize: 14, color: Colors.grey),
                 ),
                 const SizedBox(height: 8),
@@ -265,13 +250,6 @@ class _HomePageState extends State<HomePage>
                           children: [
                             Text(
                               'Fecha de los datos: ${_fechaDatos ?? '-'}',
-                              style: TextStyle(
-                                fontSize: 12,
-                                color: Colors.grey[600],
-                              ),
-                            ),
-                            Text(
-                              'Actualizado en el dispositivo: ${_formatearFechaLocal(_fechaActualizacionLocal)}',
                               style: TextStyle(
                                 fontSize: 12,
                                 color: Colors.grey[600],
